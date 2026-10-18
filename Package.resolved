@@ -1,0 +1,24 @@
+{
+  "originHash" : "382a9f4fa0eb95e25369d9a62601a0a2608c6cbc575e862836e7248e03cff8e2",
+  "pins" : [
+    {
+      "identity" : "swift-app-automation",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/arraypress/swift-app-automation.git",
+      "state" : {
+        "revision" : "84a952631f3152f85751ee93e7c5e5e4869e72cc",
+        "version" : "0.1.0"
+      }
+    },
+    {
+      "identity" : "swift-contacts",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/arraypress/swift-contacts.git",
+      "state" : {
+        "revision" : "70386126db2a6a589f999687bea549200e5991ea",
+        "version" : "0.1.1"
+      }
+    }
+  ],
+  "version" : 3
+}

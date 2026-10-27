@@ -8,6 +8,7 @@
 //
 
 import Foundation
+import SQLiteReader
 
 /// Everything WhatsApp for Mac has stored, read-only.
 ///
@@ -21,8 +22,8 @@ import Foundation
 ///
 /// Reads `ChatStorage.sqlite` — a Core Data store, unencrypted — from the
 /// native app's group container. **WhatsApp's files are never opened:** the
-/// database and its write-ahead log are cloned into a private folder and
-/// read there (see `DatabaseSnapshot` for the measurement that made this the
+/// database and its write-ahead log are copied into a private folder and
+/// read there (see `SteadySnapshot` for the measurement that made this the
 /// rule). A store is a snapshot of the moment it was made; ``refreshed()``
 /// takes a new one.
 ///
@@ -31,8 +32,7 @@ import Foundation
 /// any are gone; ``schema`` says whether this model version was checked.
 public final class WhatsAppStore {
 
-    private let snapshot: DatabaseSnapshot
-    private var database: SQLiteDatabase { snapshot.database }
+    private let database: SQLiteReader
 
     /// The group container read from.
     public let container: URL
@@ -53,24 +53,24 @@ public final class WhatsAppStore {
         if let missing = Self.missing(
             containerExists: FileManager.default.fileExists(atPath: container.path),
             databaseExists: FileManager.default.fileExists(atPath: chatStorage.path),
-            refused: PermissionCheck.access(chatStorage.path) == .refused,
+            refused: FileChecks.access(chatStorage.path) == .refused,
             appInstalled: { WhatsAppContainer.isAppInstalled },
             path: chatStorage.path
         ) { throw missing }
 
         self.container = container
-        snapshot = try DatabaseSnapshot(of: chatStorage)
+        database = try SteadySnapshot.open(chatStorage)
 
         var plist: Data?
-        try snapshot.database.query(StoreQueries.metadata) { plist = $0.data(0) }
+        try database.read(StoreQueries.metadata) { plist = $0.data(0) }
         let version = SchemaCheck.modelVersion(plist)
         var present: [String: Set<String>] = [:]
-        for table in SchemaCheck.required.keys { present[table] = try snapshot.database.columns(of: table) }
+        for table in SchemaCheck.required.keys { present[table] = database.columns(of: table) }
         let missing = SchemaCheck.missing(present)
         guard missing.isEmpty else { throw WhatsAppError.unsupportedSchema(version: version, missing: missing) }
         schema = SchemaInfo(modelVersion: version, isKnown: version.map(SchemaCheck.knownVersions.contains) ?? false)
 
-        directory = try Self.directory(chatStore: snapshot.database, container: container)
+        directory = try Self.directory(chatStore: database, container: container)
     }
 
     /// The error for a store that is not there, or `nil` when it is.
@@ -97,12 +97,12 @@ public final class WhatsAppStore {
     ///   filter on ``Chat/kind``.
     public func chats(includeHidden: Bool = false) throws -> [Chat] {
         var counts: [Int64: Int] = [:]
-        try database.query(StoreQueries.messageCounts) { counts[$0.integer(0)] = Int($0.integer(1)) }
+        try database.read(StoreQueries.messageCounts) { counts[$0.integer(0)] = Int($0.integer(1)) }
         var members: [Int64: Int] = [:]
-        try database.query(StoreQueries.memberCounts) { members[$0.integer(0)] = Int($0.integer(1)) }
+        try database.read(StoreQueries.memberCounts) { members[$0.integer(0)] = Int($0.integer(1)) }
 
         var chats: [Chat] = []
-        try database.query(StoreQueries.chats) { row in
+        try database.read(StoreQueries.chats) { row in
             let id = row.integer(0)
             let jid = row.text(1) ?? ""
             let kind = Self.chatKind(sessionType: row.integer(2), jid: jid)
@@ -163,7 +163,7 @@ public final class WhatsAppStore {
     ///   stayed behind, inactive — so by default they are left out.
     public func members(of chatID: Int64, includeFormer: Bool = false) throws -> [Member] {
         var found: [Member] = []
-        try database.query(StoreQueries.members, [.integer(chatID)]) { row in
+        try database.read(StoreQueries.members, [.integer(chatID)]) { row in
             guard let jid = row.text(0) else { return }
             let active = row.integer(2) != 0
             guard includeFormer || active else { return }
@@ -179,7 +179,7 @@ public final class WhatsAppStore {
         let (sql, values, filterAfter) = StoreQueries.messages(query)
         var found: [Message] = []
         let wanted = query.text.flatMap { $0.isEmpty ? nil : $0 }
-        try database.query(sql, values) { row in
+        try database.read(sql, values) { row in
             guard !filterAfter || found.count < query.limit else { return }
             let message = assemble(row)
             if filterAfter {
@@ -202,7 +202,7 @@ public final class WhatsAppStore {
     /// One message by row.
     public func message(id: Int64) throws -> Message {
         var found: Message?
-        try database.query(StoreQueries.message, [.integer(id)]) { found = assemble($0) }
+        try database.read(StoreQueries.message, [.integer(id)]) { found = assemble($0) }
         guard let found else { throw WhatsAppError.noSuchMessage(id) }
         return try decorate([found])[0]
     }
@@ -210,12 +210,12 @@ public final class WhatsAppStore {
     /// The newest message row, for watching from.
     public func latestID() throws -> Int64 {
         var latest: Int64 = 0
-        try database.query(StoreQueries.latestID) { latest = $0.integer(0) }
+        try database.read(StoreQueries.latestID) { latest = $0.integer(0) }
         return latest
     }
 
     /// A message from a row of ``StoreQueries/messageColumns``.
-    private func assemble(_ row: SQLiteDatabase.Row) -> Message {
+    private func assemble(_ row: SQLiteRow) -> Message {
         let isFromMe = row.integer(3) == 1
         let type = Int(row.integer(4))
         let hasMedia = !row.isNull(24)
@@ -295,14 +295,14 @@ public final class WhatsAppStore {
         let stanzas = Array(Set(messages.compactMap { $0.quote?.stanzaID }))
 
         for chunk in Self.chunks(messages.map(\.id)) {
-            try database.query(StoreQueries.links(count: chunk.count), chunk.map { .integer($0) }) { row in
+            try database.read(StoreQueries.links(count: chunk.count), chunk.map { .integer($0) }) { row in
                 let id = row.integer(0)
                 guard links[id] == nil, let url = row.nonEmptyText(1) else { return }
                 links[id] = (url, row.nonEmptyText(2))
             }
         }
         for chunk in Self.chunks(stanzas) {
-            try database.query(StoreQueries.stanzas(count: chunk.count), chunk.map { .text($0) }) { row in
+            try database.read(StoreQueries.stanzas(count: chunk.count), chunk.map { .text($0) }) { row in
                 if let stanza = row.text(0) { rows[stanza] = row.integer(1) }
             }
         }
@@ -338,17 +338,17 @@ public final class WhatsAppStore {
 
     /// Names and numbers from the chat store and, when present, WhatsApp's
     /// address book and `@lid` table — each read from its own private copy.
-    static func directory(chatStore: SQLiteDatabase, container: URL) throws -> ContactDirectory {
+    static func directory(chatStore: SQLiteReader, container: URL) throws -> ContactDirectory {
         var chatNames: [String: String] = [:]
-        try chatStore.query(StoreQueries.chatNames) { row in
+        try chatStore.read(StoreQueries.chatNames) { row in
             if let jid = row.text(0), let name = row.nonEmptyText(1) { chatNames[jid] = name }
         }
         var memberNames: [String: String] = [:]
-        try chatStore.query(StoreQueries.memberNames) { row in
+        try chatStore.read(StoreQueries.memberNames) { row in
             if let jid = row.text(0), let name = row.nonEmptyText(1) { memberNames[jid] = name }
         }
         var pushNames: [String: String] = [:]
-        try chatStore.query(StoreQueries.pushNames) { row in
+        try chatStore.read(StoreQueries.pushNames) { row in
             if let jid = row.text(0), let name = row.nonEmptyText(1) { pushNames[jid] = name }
         }
 
@@ -356,8 +356,8 @@ public final class WhatsAppStore {
         var pairs: [(lid: String, phone: String)] = []
         // Optional stores: an older app, or one never synced, may not have
         // them, and names then come from the chat store alone.
-        if let contacts = try? DatabaseSnapshot(of: WhatsAppContainer.contacts(container)) {
-            try? contacts.database.query(StoreQueries.addressBook) { row in
+        if let contacts = try? SteadySnapshot.open(WhatsAppContainer.contacts(container)) {
+            try? contacts.read(StoreQueries.addressBook) { row in
                 let name = row.nonEmptyText(2)
                     ?? [row.nonEmptyText(3), row.nonEmptyText(4)].compactMap { $0 }.joined(separator: " ").nilIfEmpty
                     ?? row.nonEmptyText(5)
@@ -370,8 +370,8 @@ public final class WhatsAppStore {
                 if let phone, let lid { pairs.append((lid, phone)) }
             }
         }
-        if let lids = try? DatabaseSnapshot(of: WhatsAppContainer.lid(container)) {
-            try? lids.database.query(StoreQueries.lidAccounts) { row in
+        if let lids = try? SteadySnapshot.open(WhatsAppContainer.lid(container)) {
+            try? lids.read(StoreQueries.lidAccounts) { row in
                 guard let lid = row.nonEmptyText(0), JIDs.kind(lid) == .lid,
                       let number = row.nonEmptyText(1), let phone = JIDs.jid(forPhone: number) else { return }
                 pairs.append((lid, phone))
@@ -389,17 +389,17 @@ public final class WhatsAppStore {
         for chat in try self.chats(includeHidden: true) { chats[chat.kind, default: 0] += 1 }
 
         var messages: [MessageKind: Int] = [:]
-        try database.query(StoreQueries.typeCounts) { row in
+        try database.read(StoreQueries.typeCounts) { row in
             let kind = MessageKinds.kind(type: Int(row.integer(0)), mimeType: row.nonEmptyText(1))
             messages[kind, default: 0] += Int(row.integer(2))
         }
         var sent = 0
-        try database.query(StoreQueries.sentCount) { sent = Int($0.integer(0)) }
+        try database.read(StoreQueries.sentCount) { sent = Int($0.integer(0)) }
 
         var records = 0
         var onDisk = 0
         let folder = WhatsAppContainer.messageFolder(container)
-        try database.query(StoreQueries.mediaPaths) { row in
+        try database.read(StoreQueries.mediaPaths) { row in
             guard let relative = row.text(0) else { return }
             records += 1
             if FileManager.default.fileExists(atPath: MediaPaths.absolute(relative, in: folder)) { onDisk += 1 }
@@ -416,9 +416,9 @@ public final class WhatsAppStore {
 
     /// One count from an optional store; 0 when it is not there.
     private static func count(_ sql: String, in file: URL) -> Int {
-        guard let copy = try? DatabaseSnapshot(of: file) else { return 0 }
+        guard let copy = try? SteadySnapshot.open(file) else { return 0 }
         var count = 0
-        try? copy.database.query(sql) { count = Int($0.integer(0)) }
+        try? copy.read(sql) { count = Int($0.integer(0)) }
         return count
     }
 
@@ -433,7 +433,7 @@ public final class WhatsAppStore {
     /// Nothing is deleted: this only looks.
     public func mediaAudit() throws -> MediaAudit {
         var referenced: Set<String> = []
-        try database.query(StoreQueries.referencedPaths) { row in
+        try database.read(StoreQueries.referencedPaths) { row in
             if let path = row.text(0) { referenced.insert(path) }
         }
 

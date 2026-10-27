@@ -20,6 +20,8 @@ let package = Package(
         // For pressing Send: refs that refuse when stale, presses checked —
         // the library `axe` is built on.
         .package(url: "https://github.com/arraypress/swift-app-automation.git", from: "0.1.0"),
+        // For reading the stores: a private copy, never the live files.
+        .package(url: "https://github.com/arraypress/swift-sqlite-reader.git", from: "0.1.0"),
     ],
     targets: [
         .target(
@@ -27,6 +29,7 @@ let package = Package(
             dependencies: [
                 .product(name: "ContactsKit", package: "swift-contacts"),
                 .product(name: "AppAutomation", package: "swift-app-automation"),
+                .product(name: "SQLiteReader", package: "swift-sqlite-reader"),
             ]
         ),
         .testTarget(

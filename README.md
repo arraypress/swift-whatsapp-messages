@@ -104,10 +104,12 @@ does: a reader opened with SQLite's `mode=ro` **still changed the `-shm`
 file** — readers record their read marks there. A read-only open of
 WhatsApp's store is not a read; it writes into WhatsApp's container.
 
-So `WhatsAppStore` never opens WhatsApp's files. It clones the database and
-its write-ahead log into a private temporary folder (an APFS clone copies no
-data and takes milliseconds), checks that neither changed while it was
-copied, reads the copy with `PRAGMA query_only`, and deletes it. That works
+So `WhatsAppStore` never opens WhatsApp's files. It copies the database and
+its write-ahead log into a private temporary folder through
+[swift-sqlite-reader](https://github.com/arraypress/swift-sqlite-reader)'s
+snapshot (an APFS clone copies no data and takes milliseconds), checks that
+neither changed while it was copied, reads the copy with `PRAGMA query_only`,
+and deletes it. That works
 while WhatsApp is running, and sees messages still in the log. A store is a
 snapshot; `refreshed()` takes a new one.
 

@@ -8,6 +8,7 @@
 //
 
 import Foundation
+import SQLiteReader
 
 /// Queries against `ChatStorage.sqlite` (model 2.12.14), reading only
 /// columns whose meaning was checked against a live store.
@@ -102,11 +103,11 @@ enum StoreQueries {
         }
         if let since = query.since {
             conditions.append("m.ZMESSAGEDATE >= ?")
-            values.append(.double(CoreDataDate.stored(since)))
+            values.append(.real(CoreDataDate.stored(since)))
         }
         if let until = query.until {
             conditions.append("m.ZMESSAGEDATE < ?")
-            values.append(.double(CoreDataDate.stored(until)))
+            values.append(.real(CoreDataDate.stored(until)))
         }
         if let after = query.afterID {
             conditions.append("m.Z_PK > ?")

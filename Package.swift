@@ -21,7 +21,7 @@ let package = Package(
         // the library `axe` is built on.
         .package(url: "https://github.com/arraypress/swift-app-automation.git", from: "0.1.0"),
         // For reading the stores: a private copy, never the live files.
-        .package(url: "https://github.com/arraypress/swift-sqlite-reader.git", from: "0.1.0"),
+        .package(url: "https://github.com/arraypress/swift-sqlite-reader.git", from: "0.2.0"),
     ],
     targets: [
         .target(

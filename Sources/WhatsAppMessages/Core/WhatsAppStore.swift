@@ -62,7 +62,7 @@ public final class WhatsAppStore {
         database = try SteadySnapshot.open(chatStorage)
 
         var plist: Data?
-        try database.read(StoreQueries.metadata) { plist = $0.data(0) }
+        try database.read(StoreQueries.metadata) { plist = $0[0].nonEmptyData }
         let version = SchemaCheck.modelVersion(plist)
         var present: [String: Set<String>] = [:]
         for table in SchemaCheck.required.keys { present[table] = database.columns(of: table) }
@@ -104,7 +104,7 @@ public final class WhatsAppStore {
         var chats: [Chat] = []
         try database.read(StoreQueries.chats) { row in
             let id = row.integer(0)
-            let jid = row.text(1) ?? ""
+            let jid = row[1].decodedString ?? ""
             let kind = Self.chatKind(sessionType: row.integer(2), jid: jid)
             let hidden = row.integer(7) != 0 || row.integer(8) != 0
             guard includeHidden || !hidden else { return }
@@ -113,9 +113,9 @@ public final class WhatsAppStore {
                 id: id,
                 jid: jid,
                 kind: kind,
-                name: row.nonEmptyText(3) ?? contact?.name,
+                name: row[3].nonEmptyString ?? contact?.name,
                 contact: contact,
-                lastMessageAt: CoreDataDate.date(row.double(4)),
+                lastMessageAt: CoreDataDate.date(row[4].double),
                 messageCount: counts[id] ?? 0,
                 unreadCount: max(Int(row.integer(5)), 0),
                 isArchived: row.integer(6) != 0,
@@ -164,7 +164,7 @@ public final class WhatsAppStore {
     public func members(of chatID: Int64, includeFormer: Bool = false) throws -> [Member] {
         var found: [Member] = []
         try database.read(StoreQueries.members, [.integer(chatID)]) { row in
-            guard let jid = row.text(0) else { return }
+            guard let jid = row[0].decodedString else { return }
             let active = row.integer(2) != 0
             guard includeFormer || active else { return }
             found.append(Member(contact: directory.contact(for: jid), isAdmin: row.integer(1) != 0, isActive: active))
@@ -218,24 +218,24 @@ public final class WhatsAppStore {
     private func assemble(_ row: SQLiteRow) -> Message {
         let isFromMe = row.integer(3) == 1
         let type = Int(row.integer(4))
-        let hasMedia = !row.isNull(24)
-        let mime = type == 4 ? nil : row.nonEmptyText(14)
+        let hasMedia = !row[24].isNull
+        let mime = type == 4 ? nil : row[14].nonEmptyString
         let kind = MessageKinds.kind(type: type, mimeType: mime)
-        let title = row.nonEmptyText(15)
-        let chatJID = row.text(23) ?? ""
+        let title = row[15].nonEmptyString
+        let chatJID = row[23].decodedString ?? ""
 
         // The sender: a group names its member; a one-to-one message names
         // the other side, in whichever form of address it was sent under.
         var sender: Contact?
         if !isFromMe {
-            let from = row.nonEmptyText(7)
-            let jid = row.nonEmptyText(8) ?? from.flatMap { JIDs.kind($0) == .group ? nil : $0 } ?? chatJID
+            let from = row[7].nonEmptyString
+            let jid = row[8].nonEmptyString ?? from.flatMap { JIDs.kind($0) == .group ? nil : $0 } ?? chatJID
             sender = directory.contact(for: jid)
         }
 
         var media: MediaItem?
         if hasMedia, kind != .text, kind != .deleted, kind != .system, kind != .call, kind != .link {
-            let relative = row.nonEmptyText(12)
+            let relative = row[12].nonEmptyString
             let path = relative.map { MediaPaths.absolute($0, in: WhatsAppContainer.messageFolder(container)) }
             media = MediaItem(
                 relativePath: relative,
@@ -244,36 +244,36 @@ public final class WhatsAppStore {
                 bytes: max(row.integer(13), 0),
                 mimeType: mime,
                 fileName: kind == .document ? title : nil,
-                duration: row.optionalInteger(16).flatMap { $0 > 0 ? Int($0) : nil },
-                thumbnailPath: row.nonEmptyText(17) ?? row.nonEmptyText(18),
-                latitude: kind == .location ? row.double(19) : nil,
-                longitude: kind == .location ? row.double(20) : nil,
-                contactName: kind == .contact ? VCard.formattedName(row.text(14)) : nil
+                duration: row[16].truncatedInt.map(Int64.init).flatMap { $0 > 0 ? Int($0) : nil },
+                thumbnailPath: row[17].nonEmptyString ?? row[18].nonEmptyString,
+                latitude: kind == .location ? row[19].double : nil,
+                longitude: kind == .location ? row[20].double : nil,
+                contactName: kind == .contact ? VCard.formattedName(row[14].decodedString) : nil
             )
         }
 
-        var text = row.nonEmptyText(5)
+        var text = row[5].nonEmptyString
         if text == nil, MessageKinds.captionIsTitle(kind) { text = title }
         if kind == .deleted { text = nil }
 
-        let quote = BlobDecoding.quote(row.data(21)).map { stored in
+        let quote = BlobDecoding.quote(row[21].nonEmptyData).map { stored in
             Quote(stanzaID: stored.stanzaID, author: stored.author.map(directory.contact(for:)))
         }
-        let reactions = BlobDecoding.reactions(row.data(22)).map { stored in
+        let reactions = BlobDecoding.reactions(row[22].nonEmptyData).map { stored in
             Reaction(emoji: stored.emoji, from: stored.sender.map(directory.contact(for:)),
                      date: CoreDataDate.date(unixMilliseconds: stored.unixMilliseconds))
         }
 
         return Message(
             id: row.integer(0),
-            stanzaID: row.nonEmptyText(1),
+            stanzaID: row[1].nonEmptyString,
             chatID: row.integer(2),
             sender: sender,
             isFromMe: isFromMe,
             kind: kind,
             typeCode: type,
             text: text,
-            date: CoreDataDate.date(row.double(6)) ?? Date(timeIntervalSinceReferenceDate: 0),
+            date: CoreDataDate.date(row[6].double) ?? Date(timeIntervalSinceReferenceDate: 0),
             media: media,
             quote: quote,
             reactions: reactions,
@@ -297,13 +297,13 @@ public final class WhatsAppStore {
         for chunk in Self.chunks(messages.map(\.id)) {
             try database.read(StoreQueries.links(count: chunk.count), chunk.map { .integer($0) }) { row in
                 let id = row.integer(0)
-                guard links[id] == nil, let url = row.nonEmptyText(1) else { return }
-                links[id] = (url, row.nonEmptyText(2))
+                guard links[id] == nil, let url = row[1].nonEmptyString else { return }
+                links[id] = (url, row[2].nonEmptyString)
             }
         }
         for chunk in Self.chunks(stanzas) {
             try database.read(StoreQueries.stanzas(count: chunk.count), chunk.map { .text($0) }) { row in
-                if let stanza = row.text(0) { rows[stanza] = row.integer(1) }
+                if let stanza = row[0].decodedString { rows[stanza] = row.integer(1) }
             }
         }
 
@@ -341,15 +341,15 @@ public final class WhatsAppStore {
     static func directory(chatStore: SQLiteReader, container: URL) throws -> ContactDirectory {
         var chatNames: [String: String] = [:]
         try chatStore.read(StoreQueries.chatNames) { row in
-            if let jid = row.text(0), let name = row.nonEmptyText(1) { chatNames[jid] = name }
+            if let jid = row[0].decodedString, let name = row[1].nonEmptyString { chatNames[jid] = name }
         }
         var memberNames: [String: String] = [:]
         try chatStore.read(StoreQueries.memberNames) { row in
-            if let jid = row.text(0), let name = row.nonEmptyText(1) { memberNames[jid] = name }
+            if let jid = row[0].decodedString, let name = row[1].nonEmptyString { memberNames[jid] = name }
         }
         var pushNames: [String: String] = [:]
         try chatStore.read(StoreQueries.pushNames) { row in
-            if let jid = row.text(0), let name = row.nonEmptyText(1) { pushNames[jid] = name }
+            if let jid = row[0].decodedString, let name = row[1].nonEmptyString { pushNames[jid] = name }
         }
 
         var book: [String: String] = [:]
@@ -358,11 +358,11 @@ public final class WhatsAppStore {
         // them, and names then come from the chat store alone.
         if let contacts = try? SteadySnapshot.open(WhatsAppContainer.contacts(container)) {
             try? contacts.read(StoreQueries.addressBook) { row in
-                let name = row.nonEmptyText(2)
-                    ?? [row.nonEmptyText(3), row.nonEmptyText(4)].compactMap { $0 }.joined(separator: " ").nilIfEmpty
-                    ?? row.nonEmptyText(5)
-                let phone = row.nonEmptyText(0)
-                let lid = row.nonEmptyText(1)
+                let name = row[2].nonEmptyString
+                    ?? [row[3].nonEmptyString, row[4].nonEmptyString].compactMap { $0 }.joined(separator: " ").nilIfEmpty
+                    ?? row[5].nonEmptyString
+                let phone = row[0].nonEmptyString
+                let lid = row[1].nonEmptyString
                 if let name {
                     if let phone { book[phone] = name }
                     if let lid { book[lid] = name }
@@ -372,8 +372,8 @@ public final class WhatsAppStore {
         }
         if let lids = try? SteadySnapshot.open(WhatsAppContainer.lid(container)) {
             try? lids.read(StoreQueries.lidAccounts) { row in
-                guard let lid = row.nonEmptyText(0), JIDs.kind(lid) == .lid,
-                      let number = row.nonEmptyText(1), let phone = JIDs.jid(forPhone: number) else { return }
+                guard let lid = row[0].nonEmptyString, JIDs.kind(lid) == .lid,
+                      let number = row[1].nonEmptyString, let phone = JIDs.jid(forPhone: number) else { return }
                 pairs.append((lid, phone))
             }
         }
@@ -390,7 +390,7 @@ public final class WhatsAppStore {
 
         var messages: [MessageKind: Int] = [:]
         try database.read(StoreQueries.typeCounts) { row in
-            let kind = MessageKinds.kind(type: Int(row.integer(0)), mimeType: row.nonEmptyText(1))
+            let kind = MessageKinds.kind(type: Int(row.integer(0)), mimeType: row[1].nonEmptyString)
             messages[kind, default: 0] += Int(row.integer(2))
         }
         var sent = 0
@@ -400,7 +400,7 @@ public final class WhatsAppStore {
         var onDisk = 0
         let folder = WhatsAppContainer.messageFolder(container)
         try database.read(StoreQueries.mediaPaths) { row in
-            guard let relative = row.text(0) else { return }
+            guard let relative = row[0].decodedString else { return }
             records += 1
             if FileManager.default.fileExists(atPath: MediaPaths.absolute(relative, in: folder)) { onDisk += 1 }
         }
@@ -434,7 +434,7 @@ public final class WhatsAppStore {
     public func mediaAudit() throws -> MediaAudit {
         var referenced: Set<String> = []
         try database.read(StoreQueries.referencedPaths) { row in
-            if let path = row.text(0) { referenced.insert(path) }
+            if let path = row[0].decodedString { referenced.insert(path) }
         }
 
         let folder = WhatsAppContainer.messageFolder(container)
@@ -487,4 +487,11 @@ extension String {
 
     /// `nil` for an empty string.
     var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+private extension SQLiteRow {
+
+    /// An integer column as SQLite's own column reader gives it: 0 for NULL,
+    /// a real truncated toward zero.
+    func integer(_ index: Int) -> Int64 { Int64(self[index].truncatedInt ?? 0) }
 }

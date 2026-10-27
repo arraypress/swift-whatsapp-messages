@@ -395,12 +395,23 @@ final class SnapshotTests: XCTestCase {
         let root = Fixture.make()
         defer { try? FileManager.default.removeItem(at: root) }
         let temp = FileManager.default.temporaryDirectory
-        func copies() -> Int {
-            ((try? FileManager.default.contentsOfDirectory(atPath: temp.path)) ?? []).filter { $0.hasPrefix("whatsapp-messages-") }.count
+        let name = WhatsAppContainer.chatStorage(root).lastPathComponent
+        // The reader's private copies of this store; other processes' readers may share the folder.
+        func copies() -> Set<String> {
+            Set(((try? FileManager.default.contentsOfDirectory(atPath: temp.path)) ?? []).filter {
+                $0.hasPrefix("sqlite-reader-")
+                    && FileManager.default.fileExists(atPath: temp.appendingPathComponent($0).appendingPathComponent(name).path)
+            })
         }
         let before = copies()
-        do { _ = try WhatsAppStore(container: root).chats() }
-        XCTAssertEqual(copies(), before)
+        var whileOpen: Set<String> = []
+        do {
+            let store = try WhatsAppStore(container: root)
+            _ = try store.chats()
+            withExtendedLifetime(store) { whileOpen = copies().subtracting(before) }
+        }
+        XCTAssertEqual(whileOpen.count, 1)
+        XCTAssertEqual(copies().subtracting(before), [])
     }
 }
 

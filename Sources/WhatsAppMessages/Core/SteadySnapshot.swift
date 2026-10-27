@@ -37,12 +37,9 @@ enum SteadySnapshot {
         for _ in 0..<attempts {
             let before = signature(source)
             let reader: SQLiteReader
-            do { reader = try SQLiteReader(path: source, opening: .snapshot) } catch { throw WhatsAppError(error) }
+            do { reader = try SQLiteReader(path: source, opening: .snapshot, busyTimeout: 2) } catch { throw WhatsAppError(error) }
             if signature(source) == before {
-                do {
-                    _ = try reader.rows("PRAGMA busy_timeout = 2000")
-                    _ = try reader.rows("PRAGMA query_only = 1")
-                } catch { throw WhatsAppError(error) }
+                do { _ = try reader.rows("PRAGMA query_only = 1") } catch { throw WhatsAppError(error) }
                 return reader
             }
             Thread.sleep(forTimeInterval: 0.05)
